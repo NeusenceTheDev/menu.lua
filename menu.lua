@@ -1,4 +1,4 @@
-	-- GangstaGlitchMenu v2.1
+	-- GangstaGlitchMenu v2.2
 	-- Maintainer notes:
 	-- 1) Keep feature toggles idempotent: repeated enable/disable calls must be safe.
 	-- 2) Prefer event-driven hooks over per-frame full scans for performance.
@@ -13,9 +13,14 @@
 	local TeleportService = game:GetService("TeleportService")
 	local RunService = game:GetService("RunService")
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local HttpService = game:GetService("HttpService")
 	local ArsenalData = ReplicatedStorage:FindFirstChild("Arsenal") and ReplicatedStorage.Arsenal:FindFirstChild("Data")
 	local weaponDataCache = {}
 	local aimDraw = {}
+	local MENU_VERSION = "2.2.0"
+	local REMOTE_MENU_URL = "https://raw.githubusercontent.com/NeusenceTheDev/menu.lua/refs/heads/main/menu.lua"
+	local UPDATE_TEMP_SUFFIX = ".codex-update.tmp"
+	local UPDATE_BACKUP_SUFFIX = ".codex-update.bak"
 
 	local function isCharacterAlive(character)
 		local hum = character and character:FindFirstChildOfClass("Humanoid")
@@ -147,6 +152,192 @@
 		return report
 	end
 
+	local function normalizeVersion(versionString)
+		local parts = {}
+		for chunk in tostring(versionString or ""):gmatch("%d+") do
+			parts[#parts + 1] = tonumber(chunk) or 0
+		end
+		return parts
+	end
+
+	local function compareVersions(leftVersion, rightVersion)
+		local left = normalizeVersion(leftVersion)
+		local right = normalizeVersion(rightVersion)
+		local maxLength = math.max(#left, #right)
+
+		for i = 1, maxLength do
+			local leftPart = left[i] or 0
+			local rightPart = right[i] or 0
+			if leftPart < rightPart then
+				return -1
+			elseif leftPart > rightPart then
+				return 1
+			end
+		end
+
+		return 0
+	end
+
+	local function extractRemoteVersion(source)
+		if type(source) ~= "string" then
+			return nil
+		end
+
+		return source:match("MENU_VERSION%s*=%s*[\"']([^\"']+)[\"']")
+	end
+
+	local function supportsLocalFileUpdates()
+		return type(readfile) == "function"
+			and type(writefile) == "function"
+			and type(isfile) == "function"
+			and type(delfile) == "function"
+	end
+
+	local function getMenuInstallPath()
+		if type(getscriptpath) == "function" then
+			local ok, path = pcall(getscriptpath)
+			if ok and type(path) == "string" and path ~= "" then
+				return path
+			end
+		end
+
+		return nil
+	end
+
+	local function fetchRemoteMenuSource()
+		local requestFallback = nil
+		if type(request) == "function" then
+			requestFallback = request
+		elseif type(http_request) == "function" then
+			requestFallback = http_request
+		elseif type(syn) == "table" and type(syn.request) == "function" then
+			requestFallback = syn.request
+		end
+
+		if type(game.HttpGet) == "function" then
+			local ok, body = pcall(function()
+				return game:HttpGet(REMOTE_MENU_URL, true)
+			end)
+			if ok and type(body) == "string" and #body > 0 then
+				return true, body
+			end
+		end
+
+		if requestFallback then
+			local ok, response = pcall(function()
+				return requestFallback({
+					Url = REMOTE_MENU_URL,
+					Method = "GET",
+				})
+			end)
+			if ok and response then
+				local body = response.Body or response.body
+				if type(body) == "string" and #body > 0 then
+					return true, body
+				end
+			end
+		end
+
+		if HttpService and HttpService.GetAsync then
+			local ok, body = pcall(function()
+				return HttpService:GetAsync(REMOTE_MENU_URL, true)
+			end)
+			if ok and type(body) == "string" and #body > 0 then
+				return true, body
+			end
+		end
+
+		return false, "No supported HTTP fetch API was available"
+	end
+
+	local function attemptMenuAutoUpdate()
+		local fetchOk, remoteSource = fetchRemoteMenuSource()
+		if not fetchOk then
+			logError("UPDATE", "Unable to fetch remote menu source", nil, remoteSource)
+			return false
+		end
+
+		local remoteVersion = extractRemoteVersion(remoteSource)
+		if not remoteVersion then
+			logError("UPDATE", "Remote source is missing MENU_VERSION", nil, REMOTE_MENU_URL)
+			return false
+		end
+
+		if compareVersions(MENU_VERSION, remoteVersion) >= 0 then
+			print(string.format("[UPDATE] menu.lua is current (%s)", MENU_VERSION))
+			return false
+		end
+
+		local installPath = getMenuInstallPath()
+		if not installPath then
+			warn(string.format("[UPDATE] New version %s is available, but this runtime does not expose getscriptpath()", remoteVersion))
+			return true
+		end
+
+		if not supportsLocalFileUpdates() then
+			warn(string.format("[UPDATE] New version %s is available, but file APIs are unavailable", remoteVersion))
+			return true
+		end
+
+		local tempPath = installPath .. UPDATE_TEMP_SUFFIX
+		local backupPath = installPath .. UPDATE_BACKUP_SUFFIX
+
+		local tempWriteOk, tempWriteErr = pcall(function()
+			writefile(tempPath, remoteSource)
+		end)
+		if not tempWriteOk then
+			logError("UPDATE", "Failed to write temp update file", tempWriteErr, tempPath)
+			return false
+		end
+
+		local verifyOk, verifiedSource = pcall(function()
+			return readfile(tempPath)
+		end)
+		if not verifyOk or verifiedSource ~= remoteSource then
+			pcall(function()
+				delfile(tempPath)
+			end)
+			logError("UPDATE", "Temp update verification failed", verifiedSource, tempPath)
+			return false
+		end
+
+		if isfile(installPath) then
+			local backupOk, backupErr = pcall(function()
+				writefile(backupPath, readfile(installPath))
+			end)
+			if not backupOk then
+				pcall(function()
+					delfile(tempPath)
+				end)
+				logError("UPDATE", "Failed to create backup before update", backupErr, backupPath)
+				return false
+			end
+		end
+
+		local replaceOk, replaceErr = pcall(function()
+			writefile(installPath, remoteSource)
+		end)
+		if not replaceOk then
+			if isfile(backupPath) then
+				pcall(function()
+					writefile(installPath, readfile(backupPath))
+				end)
+			end
+			pcall(function()
+				delfile(tempPath)
+			end)
+			logError("UPDATE", "Failed to replace local menu.lua", replaceErr, installPath)
+			return false
+		end
+
+		pcall(function()
+			delfile(tempPath)
+		end)
+
+		print(string.format("[UPDATE] menu.lua updated from %s to %s", MENU_VERSION, remoteVersion))
+		return true
+	end
+
 	-- Global error handler for unhandled errors
 	local function setupGlobalErrorHandler()
 		local oldError = error
@@ -178,6 +369,13 @@
 	end
 
 	setupGlobalErrorHandler()
+
+	task.spawn(function()
+		local ok, result = pcall(attemptMenuAutoUpdate)
+		if not ok then
+			logError("UPDATE", "Auto-update task failed", nil, result)
+		end
+	end)
 
 	local loadWeaponData
 
@@ -4910,7 +5108,7 @@
 		},
 	}
 
-	local function isKillAllMeleeTool(tool)
+	killAllState.isKillAllMeleeTool = function(tool)
 		if not tool then
 			return false
 		end
@@ -4932,7 +5130,7 @@
 		return false
 	end
 
-	local function refreshKillAllSpawnProtectionCache()
+	killAllState.refreshKillAllSpawnProtectionCache = function()
 		if not isArsenal then
 			killAllState.spawnProtectionCache.entries = {}
 			killAllState.spawnProtectionCache.lastRefresh = tick()
@@ -4966,12 +5164,12 @@
 		cache.lastRefresh = now
 	end
 
-	local function isKillAllSpawnProtectedTarget(rootPart)
+	killAllState.isKillAllSpawnProtectedTarget = function(rootPart)
 		if not rootPart or not isArsenal then
 			return false
 		end
 
-		refreshKillAllSpawnProtectionCache()
+		killAllState.refreshKillAllSpawnProtectionCache()
 		local rootPos = rootPart.Position
 		for _, inst in ipairs(killAllState.spawnProtectionCache.entries) do
 			if inst and inst.Parent and inst:IsA("BasePart") then
@@ -4995,7 +5193,7 @@
 		return false
 	end
 
-	local function primeKillAllTarget(targetPlayer)
+	killAllState.primeKillAllTarget = function(targetPlayer)
 		if not killAllState.enabled or not targetPlayer or targetPlayer == player then
 			return
 		end
@@ -5013,7 +5211,7 @@
 				return
 			end
 
-			if not isKillAllTargetPlayer(targetPlayer) then
+		if not killAllState.isKillAllTargetPlayer(targetPlayer) then
 				return
 			end
 
@@ -5023,7 +5221,7 @@
 		end)
 	end
 
-	local function clearKillAllSpawnTracking()
+	killAllState.clearKillAllSpawnTracking = function()
 		for _, conn in ipairs(killAllState.spawnConnections) do
 			pcall(function()
 				conn:Disconnect()
@@ -5032,7 +5230,7 @@
 		killAllState.spawnConnections = {}
 	end
 
-	local function startKillAllSpawnTracking()
+	killAllState.startKillAllSpawnTracking = function()
 		if #killAllState.spawnConnections > 0 then
 			return
 		end
@@ -5040,7 +5238,7 @@
 		for _, targetPlayer in ipairs(Players:GetPlayers()) do
 			if targetPlayer ~= player then
 				killAllState.spawnConnections[#killAllState.spawnConnections + 1] = targetPlayer.CharacterAdded:Connect(function()
-					primeKillAllTarget(targetPlayer)
+					killAllState.primeKillAllTarget(targetPlayer)
 				end)
 			end
 		end
@@ -5050,7 +5248,7 @@
 				return
 			end
 			killAllState.spawnConnections[#killAllState.spawnConnections + 1] = targetPlayer.CharacterAdded:Connect(function()
-				primeKillAllTarget(targetPlayer)
+				killAllState.primeKillAllTarget(targetPlayer)
 			end)
 		end)
 	end
@@ -5950,7 +6148,7 @@
 		end
 	end
 
-	local function isValidKillAllPosition(position)
+	killAllState.isValidKillAllPosition = function(position)
 		if not position then
 			return false
 		end
@@ -5964,7 +6162,7 @@
 		return true
 	end
 
-	local function isKillAllTargetPlayer(targetPlayer)
+	killAllState.isKillAllTargetPlayer = function(targetPlayer)
 		if not targetPlayer or targetPlayer == player then
 			return false
 		end
@@ -5983,20 +6181,20 @@
 		if not root or not head then
 			return false
 		end
-		if isKillAllSpawnProtectedTarget(root) then
+		if killAllState.isKillAllSpawnProtectedTarget(root) then
 			return false
 		end
-		if not isValidKillAllPosition(root.Position) then
+		if not killAllState.isValidKillAllPosition(root.Position) then
 			return false
 		end
 		return true
 	end
 
-	local function getBestKillAllTarget(localRoot)
+	killAllState.getBestKillAllTarget = function(localRoot)
 		local bestPlayer = nil
 		local bestDistance = math.huge
 		for _, targetPlayer in ipairs(Players:GetPlayers()) do
-			if isKillAllTargetPlayer(targetPlayer) then
+			if killAllState.isKillAllTargetPlayer(targetPlayer) then
 				local enemyRoot = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
 				if enemyRoot then
 					local distance = (localRoot.Position - enemyRoot.Position).Magnitude
@@ -6010,7 +6208,7 @@
 		return bestPlayer
 	end
 
-	local function getKillAllTool(localCharacter, localHumanoid)
+	killAllState.getKillAllTool = function(localCharacter, localHumanoid)
 		if localCharacter then
 			local equippedTool = localCharacter:FindFirstChildOfClass("Tool")
 			if equippedTool then
@@ -6033,12 +6231,12 @@
 		return nil
 	end
 
-	local function stopKillAllController()
+	killAllState.stopKillAllController = function()
 		if killAllState.connection then
 			killAllState.connection:Disconnect()
 			killAllState.connection = nil
 		end
-		clearKillAllSpawnTracking()
+		killAllState.clearKillAllSpawnTracking()
 		local localCharacter = player.Character
 		local localRoot = localCharacter and localCharacter:FindFirstChild("HumanoidRootPart")
 		local localHumanoid = localCharacter and localCharacter:FindFirstChildOfClass("Humanoid")
@@ -6055,7 +6253,7 @@
 		killAllState.lastHumanoid = nil
 	end
 
-	local function ensureKillAllController()
+	killAllState.ensureKillAllController = function()
 		if killAllState.connection then
 			return
 		end
@@ -6074,12 +6272,12 @@
 
 			localHumanoid.AutoRotate = false
 			killAllState.lastHumanoid = localHumanoid
-			local targetTool = getKillAllTool(localCharacter, localHumanoid)
-			local meleeTool = isKillAllMeleeTool(targetTool)
+			local targetTool = killAllState.getKillAllTool(localCharacter, localHumanoid)
+			local meleeTool = killAllState.isKillAllMeleeTool(targetTool)
 
 			local currentTarget = killAllState.targetPlayer
 			local shouldAcquireNow = false
-			if not isKillAllTargetPlayer(currentTarget) then
+			if not killAllState.isKillAllTargetPlayer(currentTarget) then
 				currentTarget = nil
 				killAllState.targetPlayer = nil
 				killAllState.lastAttack = 0
@@ -6088,7 +6286,7 @@
 
 			local now = tick()
 			if not currentTarget and (shouldAcquireNow or (now - killAllState.lastAcquire) >= killAllState.acquireInterval) then
-				currentTarget = getBestKillAllTarget(localRoot)
+				currentTarget = killAllState.getBestKillAllTarget(localRoot)
 				killAllState.targetPlayer = currentTarget
 				killAllState.lastAcquire = now
 				if currentTarget then
@@ -6103,7 +6301,7 @@
 			local targetCharacter = currentTarget.Character
 			local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
 			local targetHead = targetCharacter and targetCharacter:FindFirstChild("Head")
-			if not targetRoot or not targetHead or not isValidKillAllPosition(targetRoot.Position) then
+			if not targetRoot or not targetHead or not killAllState.isValidKillAllPosition(targetRoot.Position) then
 				killAllState.targetPlayer = nil
 				killAllState.lastAcquire = 0
 				killAllState.lastAttack = 0
@@ -6253,7 +6451,7 @@
 			if killAllState.enabled then
 				killAllState.enabled = false
 				setKillAllCheck(false)
-				stopKillAllController()
+				killAllState.stopKillAllController()
 			end
 			flyState.ensureController()
 		else
@@ -6270,10 +6468,10 @@
 				setFlyCheck(false)
 				flyState.stopController()
 			end
-			startKillAllSpawnTracking()
-			ensureKillAllController()
+			killAllState.startKillAllSpawnTracking()
+			killAllState.ensureKillAllController()
 		else
-			stopKillAllController()
+			killAllState.stopKillAllController()
 		end
 	end)
 
@@ -6413,7 +6611,7 @@
 			-- Kill All cleanup
 			killAllState.enabled = false
 			setKillAllCheck(false)
-			stopKillAllController()
+			killAllState.stopKillAllController()
 
 			-- Stop render/color loops
 			if visualConnection then
