@@ -1,0 +1,2 @@
+# menu.lua
+auto-update
