@@ -186,6 +186,248 @@
 		return source:match("MENU_VERSION%s*=%s*[\"']([^\"']+)[\"']")
 	end
 
+	local updatePopupState = {
+		gui = nil,
+		frame = nil,
+		titleLabel = nil,
+		statusLabel = nil,
+		progressFill = nil,
+		progressLabel = nil,
+		interactionEvent = nil,
+		choice = nil,
+	}
+
+	local function setUpdatePopupStatus(title, statusText, progressText, fillScale)
+		if updatePopupState.titleLabel then
+			updatePopupState.titleLabel.Text = title or updatePopupState.titleLabel.Text
+		end
+		if updatePopupState.statusLabel then
+			updatePopupState.statusLabel.Text = statusText or updatePopupState.statusLabel.Text
+		end
+		if updatePopupState.progressLabel then
+			updatePopupState.progressLabel.Text = progressText or updatePopupState.progressLabel.Text
+		end
+		if updatePopupState.progressFill and type(fillScale) == "number" then
+			local clamped = math.clamp(fillScale, 0, 1)
+			TweenService:Create(updatePopupState.progressFill, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				Size = UDim2.new(clamped, 0, 1, 0),
+			}):Play()
+		end
+	end
+
+	local function closeUpdatePopup(finalTitle, finalStatus, delaySeconds)
+		if updatePopupState.titleLabel or updatePopupState.statusLabel then
+			setUpdatePopupStatus(finalTitle, finalStatus, "", 1)
+		end
+
+		local gui = updatePopupState.gui
+		local frame = updatePopupState.frame
+		if not gui or not frame then
+			return
+		end
+
+		task.delay(delaySeconds or 0.8, function()
+			if frame and frame.Parent then
+				local tweenOut = TweenService:Create(frame, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+					BackgroundTransparency = 1,
+					Size = UDim2.new(0, 520, 0, 228),
+				})
+				tweenOut:Play()
+				tweenOut.Completed:Wait()
+			end
+			if gui and gui.Parent then
+				gui:Destroy()
+			end
+			if updatePopupState.interactionEvent then
+				updatePopupState.interactionEvent:Destroy()
+			end
+			updatePopupState.gui = nil
+			updatePopupState.frame = nil
+			updatePopupState.titleLabel = nil
+			updatePopupState.statusLabel = nil
+			updatePopupState.progressFill = nil
+			updatePopupState.progressLabel = nil
+			updatePopupState.interactionEvent = nil
+			updatePopupState.choice = nil
+		end)
+	end
+
+	local function createUpdatePopup()
+		local popupGui = Instance.new("ScreenGui")
+		popupGui.Name = "MenuUpdatePopup"
+		popupGui.ResetOnSpawn = false
+		popupGui.IgnoreGuiInset = true
+		popupGui.DisplayOrder = 10050
+		popupGui.Parent = game:GetService("CoreGui")
+
+		local backdrop = Instance.new("Frame")
+		backdrop.Name = "Backdrop"
+		backdrop.Size = UDim2.new(1, 0, 1, 0)
+		backdrop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		backdrop.BackgroundTransparency = 0.42
+		backdrop.BorderSizePixel = 0
+		backdrop.Parent = popupGui
+
+		local frame = Instance.new("Frame")
+		frame.Name = "Card"
+		frame.AnchorPoint = Vector2.new(0.5, 0.5)
+		frame.Position = UDim2.new(0.5, 0, 0.5, 18)
+		frame.Size = UDim2.new(0, 520, 0, 228)
+		frame.BackgroundColor3 = Color3.fromRGB(12, 12, 18)
+		frame.BackgroundTransparency = 0.02
+		frame.BorderSizePixel = 0
+		frame.ClipsDescendants = true
+		frame.Parent = popupGui
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 14)
+		corner.Parent = frame
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Color = Color3.fromRGB(255, 40, 80)
+		stroke.Transparency = 0.18
+		stroke.Thickness = 1.2
+		stroke.Parent = frame
+
+		local gradient = Instance.new("UIGradient")
+		gradient.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(18, 18, 26)),
+			ColorSequenceKeypoint.new(0.5, Color3.fromRGB(12, 12, 18)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 8, 14)),
+		})
+		gradient.Rotation = 155
+		gradient.Parent = frame
+
+		local title = Instance.new("TextLabel")
+		title.BackgroundTransparency = 1
+		title.Position = UDim2.new(0, 20, 0, 16)
+		title.Size = UDim2.new(1, -40, 0, 24)
+		title.Font = Enum.Font.GothamBold
+		title.Text = "Update Ready"
+		title.TextColor3 = Color3.fromRGB(240, 240, 245)
+		title.TextSize = 19
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.Parent = frame
+
+		local status = Instance.new("TextLabel")
+		status.BackgroundTransparency = 1
+		status.Position = UDim2.new(0, 20, 0, 46)
+		status.Size = UDim2.new(1, -40, 0, 64)
+		status.Font = Enum.Font.GothamMedium
+		status.Text = "Manual confirmation is required before menu.lua contacts GitHub."
+		status.TextColor3 = Color3.fromRGB(214, 218, 230)
+		status.TextSize = 14
+		status.TextWrapped = true
+		status.TextXAlignment = Enum.TextXAlignment.Left
+		status.TextYAlignment = Enum.TextYAlignment.Top
+		status.Parent = frame
+
+		local progressBack = Instance.new("Frame")
+		progressBack.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+		progressBack.BorderSizePixel = 0
+		progressBack.Position = UDim2.new(0, 20, 0, 118)
+		progressBack.Size = UDim2.new(1, -40, 0, 12)
+		progressBack.Parent = frame
+		local progressCorner = Instance.new("UICorner")
+		progressCorner.CornerRadius = UDim.new(1, 0)
+		progressCorner.Parent = progressBack
+
+		local progressFill = Instance.new("Frame")
+		progressFill.BackgroundColor3 = Color3.fromRGB(255, 78, 112)
+		progressFill.BorderSizePixel = 0
+		progressFill.Size = UDim2.new(0.08, 0, 1, 0)
+		progressFill.Parent = progressBack
+		local progressFillCorner = Instance.new("UICorner")
+		progressFillCorner.CornerRadius = UDim.new(1, 0)
+		progressFillCorner.Parent = progressFill
+
+		local progressLabel = Instance.new("TextLabel")
+		progressLabel.BackgroundTransparency = 1
+		progressLabel.Position = UDim2.new(0, 20, 0, 136)
+		progressLabel.Size = UDim2.new(1, -40, 0, 18)
+		progressLabel.Font = Enum.Font.Gotham
+		progressLabel.Text = REMOTE_MENU_URL
+		progressLabel.TextColor3 = Color3.fromRGB(156, 160, 174)
+		progressLabel.TextSize = 11
+		progressLabel.TextTruncate = Enum.TextTruncate.AtEnd
+		progressLabel.TextXAlignment = Enum.TextXAlignment.Left
+		progressLabel.Parent = frame
+
+		local actionRow = Instance.new("Frame")
+		actionRow.BackgroundTransparency = 1
+		actionRow.Position = UDim2.new(0, 20, 0, 160)
+		actionRow.Size = UDim2.new(1, -40, 0, 38)
+		actionRow.Parent = frame
+
+		local continueButton = Instance.new("TextButton")
+		continueButton.Size = UDim2.new(0.5, -8, 1, 0)
+		continueButton.Position = UDim2.new(0, 0, 0, 0)
+		continueButton.BackgroundColor3 = Color3.fromRGB(255, 40, 80)
+		continueButton.Text = "Continue Update"
+		continueButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		continueButton.TextSize = 13
+		continueButton.Font = Enum.Font.GothamBold
+		continueButton.AutoButtonColor = true
+		continueButton.Parent = actionRow
+		local continueCorner = Instance.new("UICorner")
+		continueCorner.CornerRadius = UDim.new(0, 10)
+		continueCorner.Parent = continueButton
+
+		local skipButton = Instance.new("TextButton")
+		skipButton.Size = UDim2.new(0.5, -8, 1, 0)
+		skipButton.Position = UDim2.new(0.5, 8, 0, 0)
+		skipButton.BackgroundColor3 = Color3.fromRGB(26, 26, 36)
+		skipButton.Text = "Skip Update"
+		skipButton.TextColor3 = Color3.fromRGB(220, 224, 236)
+		skipButton.TextSize = 13
+		skipButton.Font = Enum.Font.GothamBold
+		skipButton.AutoButtonColor = true
+		skipButton.Parent = actionRow
+		local skipCorner = Instance.new("UICorner")
+		skipCorner.CornerRadius = UDim.new(0, 10)
+		skipCorner.Parent = skipButton
+
+		local interactionEvent = Instance.new("BindableEvent")
+		updatePopupState.interactionEvent = interactionEvent
+
+		continueButton.MouseButton1Click:Connect(function()
+			if updatePopupState.choice then
+				return
+			end
+			updatePopupState.choice = "continue"
+			continueButton.Active = false
+			skipButton.Active = false
+			continueButton.Text = "Starting..."
+			skipButton.Text = "Please wait"
+			interactionEvent:Fire("continue")
+		end)
+
+		skipButton.MouseButton1Click:Connect(function()
+			if updatePopupState.choice then
+				return
+			end
+			updatePopupState.choice = "skip"
+			continueButton.Active = false
+			skipButton.Active = false
+			continueButton.Text = "Continue Update"
+			skipButton.Text = "Skipping..."
+			interactionEvent:Fire("skip")
+		end)
+
+		updatePopupState.gui = popupGui
+		updatePopupState.frame = frame
+		updatePopupState.titleLabel = title
+		updatePopupState.statusLabel = status
+		updatePopupState.progressFill = progressFill
+		updatePopupState.progressLabel = progressLabel
+
+		TweenService:Create(frame, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+			Position = UDim2.new(0.5, 0, 0.5, 0),
+		}):Play()
+
+		return popupGui
+	end
+
 	local function supportsLocalFileUpdates()
 		return type(readfile) == "function"
 			and type(writefile) == "function"
@@ -204,7 +446,7 @@
 		return nil
 	end
 
-	local function fetchRemoteMenuSource()
+	local function fetchRemoteMenuSource(setStatus)
 		local requestFallback = nil
 		if type(request) == "function" then
 			requestFallback = request
@@ -215,6 +457,9 @@
 		end
 
 		if type(game.HttpGet) == "function" then
+			if setStatus then
+				setStatus("Fetching from GitHub", "Requesting " .. REMOTE_MENU_URL .. " via game:HttpGet()", "game:HttpGet", 0.28)
+			end
 			local ok, body = pcall(function()
 				return game:HttpGet(REMOTE_MENU_URL, true)
 			end)
@@ -224,6 +469,9 @@
 		end
 
 		if requestFallback then
+			if setStatus then
+				setStatus("Fetching from GitHub", "Requesting " .. REMOTE_MENU_URL .. " via executor HTTP API.", "request/http_request", 0.45)
+			end
 			local ok, response = pcall(function()
 				return requestFallback({
 					Url = REMOTE_MENU_URL,
@@ -239,6 +487,9 @@
 		end
 
 		if HttpService and HttpService.GetAsync then
+			if setStatus then
+				setStatus("Fetching from GitHub", "Requesting " .. REMOTE_MENU_URL .. " via HttpService:GetAsync().", "HttpService:GetAsync", 0.6)
+			end
 			local ok, body = pcall(function()
 				return HttpService:GetAsync(REMOTE_MENU_URL, true)
 			end)
@@ -250,33 +501,60 @@
 		return false, "No supported HTTP fetch API was available"
 	end
 
-	local function attemptMenuAutoUpdate()
-		local fetchOk, remoteSource = fetchRemoteMenuSource()
+	local function attemptMenuAutoUpdate(setStatus)
+		if setStatus then
+			setStatus("Checking for updates", "Contacting GitHub to inspect the latest menu.lua build.", "Starting update check", 0.12)
+		end
+
+		local fetchOk, remoteSource = fetchRemoteMenuSource(setStatus)
 		if not fetchOk then
+			if setStatus then
+				setStatus("Update check failed", "Could not fetch the GitHub raw file. The current menu will keep running.", "Fetch failed", 1)
+			end
 			logError("UPDATE", "Unable to fetch remote menu source", nil, remoteSource)
 			return false
 		end
 
+		if setStatus then
+			setStatus("Checking version", "Downloaded the remote script. Reading MENU_VERSION...", "Verifying remote version", 0.76)
+		end
+
 		local remoteVersion = extractRemoteVersion(remoteSource)
 		if not remoteVersion then
+			if setStatus then
+				setStatus("Update check failed", "GitHub returned a file, but it did not contain a MENU_VERSION marker.", "Version parse failed", 1)
+			end
 			logError("UPDATE", "Remote source is missing MENU_VERSION", nil, REMOTE_MENU_URL)
 			return false
 		end
 
 		if compareVersions(MENU_VERSION, remoteVersion) >= 0 then
 			print(string.format("[UPDATE] menu.lua is current (%s)", MENU_VERSION))
+			if setStatus then
+				setStatus("Up to date", string.format("menu.lua is already current at %s.", MENU_VERSION), "No download required", 1)
+			end
 			return false
 		end
 
 		local installPath = getMenuInstallPath()
 		if not installPath then
+			if setStatus then
+				setStatus("Update found", string.format("Remote version %s is available, but this runtime cannot self-write.", remoteVersion), "Waiting for supported file APIs", 1)
+			end
 			warn(string.format("[UPDATE] New version %s is available, but this runtime does not expose getscriptpath()", remoteVersion))
 			return true
 		end
 
 		if not supportsLocalFileUpdates() then
+			if setStatus then
+				setStatus("Update found", string.format("Remote version %s is ready to install, but file APIs are unavailable.", remoteVersion), "Waiting for write access", 1)
+			end
 			warn(string.format("[UPDATE] New version %s is available, but file APIs are unavailable", remoteVersion))
 			return true
+		end
+
+		if setStatus then
+			setStatus("Downloading update", string.format("Writing the fetched GitHub source to %s.temp before replacement.", installPath), "Preparing safe swap", 0.88)
 		end
 
 		local tempPath = installPath .. UPDATE_TEMP_SUFFIX
@@ -334,6 +612,10 @@
 			delfile(tempPath)
 		end)
 
+		if setStatus then
+			setStatus("Update complete", string.format("menu.lua updated from %s to %s.", MENU_VERSION, remoteVersion), "Swap completed successfully", 1)
+		end
+
 		print(string.format("[UPDATE] menu.lua updated from %s to %s", MENU_VERSION, remoteVersion))
 		return true
 	end
@@ -371,9 +653,48 @@
 	setupGlobalErrorHandler()
 
 	task.spawn(function()
-		local ok, result = pcall(attemptMenuAutoUpdate)
+		local popupOk, popupResult = pcall(createUpdatePopup)
+		if not popupOk then
+			warn("[UPDATE] Could not create update popup UI.")
+			if popupResult then
+				warn(tostring(popupResult))
+			end
+			return
+		end
+
+		setUpdatePopupStatus(
+			"Update Ready",
+			"Click Continue Update to fetch the latest menu.lua from GitHub, or Skip Update to keep the current version.",
+			"Waiting for your choice",
+			0.08
+		)
+
+		local choice = "skip"
+		if updatePopupState.interactionEvent then
+			local okWait, waitedChoice = pcall(function()
+				return updatePopupState.interactionEvent.Event:Wait()
+			end)
+			if okWait and type(waitedChoice) == "string" then
+				choice = waitedChoice
+			end
+		end
+
+		if choice ~= "continue" then
+			closeUpdatePopup("Update skipped", "The current menu will keep running without checking GitHub.", 1.0)
+			return
+		end
+
+		local ok, result = pcall(attemptMenuAutoUpdate, setUpdatePopupStatus)
 		if not ok then
 			logError("UPDATE", "Auto-update task failed", nil, result)
+			closeUpdatePopup("Update check failed", "The updater hit an unexpected error while checking GitHub.", 1.4)
+			return
+		end
+
+		if result then
+			closeUpdatePopup("Update installed", "The GitHub version has been downloaded and applied.", 1.4)
+		else
+			closeUpdatePopup("Update check complete", "menu.lua is current, or the updater could not self-apply here.", 1.0)
 		end
 	end)
 
